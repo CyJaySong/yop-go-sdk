@@ -111,8 +111,8 @@ func (yopClient *YopClient) MultiPartUploadFileByUrl(yopRequest *request.YopRequ
 		defer func() { _ = multipartWriter.Close() }()
 		for k, v := range yopRequest.Params {
 			for i := range v {
-				if err = multipartWriter.WriteField(k, url.QueryEscape(v[i])); err != nil {
-					_ = pw.CloseWithError(err)
+				if writeErr := multipartWriter.WriteField(k, url.QueryEscape(v[i])); writeErr != nil {
+					_ = pw.CloseWithError(writeErr)
 					return
 				}
 			}
@@ -164,7 +164,7 @@ func (yopClient *YopClient) MultiPartUploadFileByUrl(yopRequest *request.YopRequ
 }
 
 // MultiPartUploadFileByBytes 根据Bytes使用表单方式上传文件
-func (yopClient *YopClient) MultiPartUploadFileByBytes(yopRequest *request.YopRequest, fieldName, filename string, byte []byte) (*response.YopResponse, error) {
+func (yopClient *YopClient) MultiPartUploadFileByBytes(yopRequest *request.YopRequest, fieldName, filename string, data []byte) (*response.YopResponse, error) {
 	initRequest(yopRequest)
 	var signer = auth.RsaSigner{}
 	err := signer.SignRequest(*yopRequest)
@@ -183,7 +183,7 @@ func (yopClient *YopClient) MultiPartUploadFileByBytes(yopRequest *request.YopRe
 		}
 	}
 	fileWriter, _ := multipartWriter.CreateFormFile(fieldName, filename)
-	if _, err = fileWriter.Write(byte); err != nil {
+	if _, err = fileWriter.Write(data); err != nil {
 		_ = multipartWriter.Close()
 		return nil, err
 	}
