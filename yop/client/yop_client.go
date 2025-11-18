@@ -238,8 +238,12 @@ func (yopClient *YopClient) Request(request *request.YopRequest) (*response.YopR
 	if nil != err {
 		return nil, err
 	}
-
-	httpRequest, err := buildHttpRequest(*request)
+	if request.Timeout == 0 {
+		request.Timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), request.Timeout)
+	defer cancel()
+	httpRequest, err := buildHttpRequest(*request, ctx)
 	if nil != err {
 		return nil, err
 	}
@@ -289,13 +293,7 @@ func buildUserAgent() string {
 	return "go" + "/" + constants.SDK_VERSION + "/" + runtime.GOOS + "/" + runtime.Version()
 }
 
-func buildHttpRequest(yopRequest request.YopRequest) (http.Request, error) {
-	if yopRequest.Timeout == 0 {
-		yopRequest.Timeout = 10 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), yopRequest.Timeout)
-	defer cancel()
-
+func buildHttpRequest(yopRequest request.YopRequest, ctx context.Context) (http.Request, error) {
 	var uri = yopRequest.ServerRoot + yopRequest.ApiUri
 	isMultiPart, err := checkForMultiPart(yopRequest)
 	if nil != err {
