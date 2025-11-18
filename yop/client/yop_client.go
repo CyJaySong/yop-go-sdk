@@ -50,8 +50,8 @@ func (yopClient *YopClient) MultiPartUploadFileByUrl(yopRequest *request.YopRequ
 	if yopRequest.Timeout == 0 {
 		yopRequest.Timeout = 10 * time.Second
 	}
-	ctx, _ := context.WithTimeout(context.Background(), yopRequest.Timeout)
-	//defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), yopRequest.Timeout)
+	defer cancel()
 	downloadHttpReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, sourceUrl, nil)
 	downloadResp, err := http.DefaultClient.Do(downloadHttpReq)
 	if err != nil {
@@ -193,8 +193,8 @@ func (yopClient *YopClient) MultiPartUploadFileByBytes(yopRequest *request.YopRe
 	if yopRequest.Timeout == 0 {
 		yopRequest.Timeout = 10 * time.Second
 	}
-	ctx, _ := context.WithTimeout(context.Background(), yopRequest.Timeout)
-	//defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), yopRequest.Timeout)
+	defer cancel()
 
 	var uri = yopRequest.ServerRoot + yopRequest.ApiUri
 	httpRequest, err := http.NewRequestWithContext(ctx, "POST", uri, multipartBuffer)
@@ -293,8 +293,8 @@ func buildHttpRequest(yopRequest request.YopRequest) (http.Request, error) {
 	if yopRequest.Timeout == 0 {
 		yopRequest.Timeout = 10 * time.Second
 	}
-	ctx, _ := context.WithTimeout(context.Background(), yopRequest.Timeout)
-	//defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), yopRequest.Timeout)
+	defer cancel()
 
 	var uri = yopRequest.ServerRoot + yopRequest.ApiUri
 	isMultiPart, err := checkForMultiPart(yopRequest)
