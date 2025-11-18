@@ -108,12 +108,11 @@ func (yopClient *YopClient) MultiPartUploadFileByUrl(yopRequest *request.YopRequ
 	pipeReader, pipeWriter := io.Pipe()
 	multipartWriter := multipart.NewWriter(pipeWriter)
 	go func(multipartWriter *multipart.Writer, pw *io.PipeWriter) {
-		defer func(pw *io.PipeWriter) { _ = pw.Close() }(pw)
+		defer func() { _ = multipartWriter.Close() }()
 		for k, v := range yopRequest.Params {
 			for i := range v {
 				if err = multipartWriter.WriteField(k, url.QueryEscape(v[i])); err != nil {
 					_ = pw.CloseWithError(err)
-					_ = multipartWriter.Close()
 					return
 				}
 			}
@@ -123,8 +122,9 @@ func (yopClient *YopClient) MultiPartUploadFileByUrl(yopRequest *request.YopRequ
 		// 将下载内容直接复制到表单字段
 		if _, copyErr := io.Copy(fileWriter, downloadResp.Body); copyErr != nil {
 			_ = pw.CloseWithError(fmt.Errorf("copy file failed: %w", copyErr))
+			return
 		}
-		_ = multipartWriter.Close()
+		_ = pw.Close()
 	}(multipartWriter, pipeWriter)
 
 	//build http request
