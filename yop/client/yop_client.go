@@ -9,6 +9,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"mime/multipart"
+	"net/http"
+	"net/url"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+
 	uuid "github.com/satori/go.uuid"
 	log "github.com/sirupsen/logrus"
 	"github.com/yop-platform/yop-go-sdk/yop/auth"
@@ -16,14 +27,6 @@ import (
 	"github.com/yop-platform/yop-go-sdk/yop/request"
 	"github.com/yop-platform/yop-go-sdk/yop/response"
 	"github.com/yop-platform/yop-go-sdk/yop/utils"
-	"io"
-	"io/ioutil"
-	"mime/multipart"
-	"net/http"
-	"net/url"
-	"runtime"
-	"strings"
-	"time"
 )
 
 var DefaultClient = YopClient{&http.Client{Transport: http.DefaultTransport}}
@@ -34,6 +37,196 @@ type YopClient struct {
 
 func init() {
 	log.SetLevel(log.InfoLevel)
+}
+
+// MultiPartUploadFileByUrl 根据URL使用表单方式上传文件
+func (yopClient *YopClient) MultiPartUploadFileByUrl(yopRequest *request.YopRequest, fieldName, filename, sourceUrl string) (*response.YopResponse, error) {
+	initRequest(yopRequest)
+	var signer = auth.RsaSigner{}
+	err := signer.SignRequest(*yopRequest)
+	if nil != err {
+		return nil, err
+	}
+	downloadResp, err := http.Get(sourceUrl)
+	if err != nil {
+		return nil, err
+	}
+	defer func(Body io.ReadCloser) { _ = Body.Close() }(downloadResp.Body)
+	if downloadResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download file failed: %d", downloadResp.StatusCode)
+	}
+	if filename == "" {
+		// 尝试从 Content-Disposition 获取文件名
+		if disposition := downloadResp.Header.Get("Content-Disposition"); disposition != "" {
+			if strings.Contains(disposition, "filename=") {
+				start := strings.Index(disposition, "filename=") + 9
+				filename = strings.Trim(disposition[start:], "\"'")
+			}
+		}
+
+		// 如果没有从响应头获取到文件名，则从 URL 获取
+		if filename == "" {
+			URL, _ := url.Parse(sourceUrl)
+			filename = filepath.Base(URL.Path)
+			if filename == "." || filename == "/" {
+				// 根据 Content-Type 设置默认扩展名
+				contentType := downloadResp.Header.Get("Content-Type")
+				switch {
+				case strings.Contains(contentType, "text/plain"):
+					filename = "file.txt"
+				case strings.Contains(contentType, "application/pdf"):
+					filename = "file.pdf"
+				case strings.Contains(contentType, "application/zip"):
+					filename = "file.zip"
+				case strings.Contains(contentType, "image/jpeg"):
+					filename = "image.jpg"
+				case strings.Contains(contentType, "image/gif"):
+					filename = "image.gif"
+				case strings.Contains(contentType, "image/png"):
+					filename = "image.png"
+				case strings.Contains(contentType, "audio/ogg"):
+					filename = "audio.ogg"
+				case strings.Contains(contentType, "audio/mpeg"):
+					filename = "audio.mp3"
+				case strings.Contains(contentType, "video/mp4"):
+					filename = "video.mp4"
+				case strings.Contains(contentType, "video/webm"):
+					filename = "video.webm"
+				default:
+					filename = "file"
+				}
+			}
+		}
+	}
+
+	pipeReader, pipeWriter := io.Pipe()
+	multipartWriter := multipart.NewWriter(pipeWriter)
+	go func(multipartWriter *multipart.Writer, pw *io.PipeWriter) {
+		defer func(pw *io.PipeWriter) { _ = pw.Close() }(pw)
+		for k, v := range yopRequest.Params {
+			for i := range v {
+				if err = multipartWriter.WriteField(k, url.QueryEscape(v[i])); err != nil {
+					_ = pw.CloseWithError(err)
+					_ = multipartWriter.Close()
+					return
+				}
+			}
+		}
+		// 设置表单字段
+		fileWriter, _ := multipartWriter.CreateFormFile(fieldName, filename)
+		// 将下载内容直接复制到表单字段
+		if _, copyErr := io.Copy(fileWriter, downloadResp.Body); copyErr != nil {
+			_ = pw.CloseWithError(fmt.Errorf("copy file failed: %w", copyErr))
+		}
+		_ = multipartWriter.Close()
+	}(multipartWriter, pipeWriter)
+
+	//build http request
+	if yopRequest.Timeout == 0 {
+		yopRequest.Timeout = 10 * time.Second
+	}
+	ctx, _ := context.WithTimeout(context.Background(), yopRequest.Timeout)
+	//defer cancel()
+
+	var uri = yopRequest.ServerRoot + yopRequest.ApiUri
+	httpRequest, err := http.NewRequestWithContext(ctx, "POST", uri, pipeReader)
+	if nil != err {
+		return nil, err
+	}
+	httpRequest.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	for k, v := range yopRequest.Headers {
+		httpRequest.Header.Set(k, v)
+	}
+
+	httpResp, err := yopClient.Client.Do(httpRequest)
+	if nil != err {
+		return nil, err
+	}
+	defer func(Body io.ReadCloser) { _ = Body.Close() }(httpResp.Body)
+	body, err := io.ReadAll(httpResp.Body)
+	if nil != err {
+		return nil, err
+	}
+	var yopResponse = response.YopResponse{Content: body}
+	metaData := response.YopResponseMetadata{}
+	metaData.YopSign = httpResp.Header.Get("X-Yop-Sign")
+	metaData.YopRequestId = httpResp.Header.Get("X-Yop-Request-Id")
+	yopResponse.Metadata = &metaData
+	respHandleCtx := response.RespHandleContext{YopSigner: &signer, YopResponse: &yopResponse, YopRequest: *yopRequest}
+	for i := range response.ANALYZER_CHAIN {
+		err = response.ANALYZER_CHAIN[i].Analyze(respHandleCtx, httpResp)
+		if nil != err {
+			return nil, err
+		}
+	}
+	return &yopResponse, nil
+}
+
+// MultiPartUploadFileByBytes 根据Bytes使用表单方式上传文件
+func (yopClient *YopClient) MultiPartUploadFileByBytes(yopRequest *request.YopRequest, fieldName, filename string, byte []byte) (*response.YopResponse, error) {
+	initRequest(yopRequest)
+	var signer = auth.RsaSigner{}
+	err := signer.SignRequest(*yopRequest)
+	if nil != err {
+		return nil, err
+	}
+
+	multipartBuffer := &bytes.Buffer{}
+	multipartWriter := multipart.NewWriter(multipartBuffer)
+	for k, v := range yopRequest.Params {
+		for i := range v {
+			if err = multipartWriter.WriteField(k, url.QueryEscape(v[i])); err != nil {
+				_ = multipartWriter.Close()
+				return nil, err
+			}
+		}
+	}
+	fileWriter, _ := multipartWriter.CreateFormFile(fieldName, filename)
+	if _, err = fileWriter.Write(byte); err != nil {
+		_ = multipartWriter.Close()
+		return nil, err
+	}
+	_ = multipartWriter.Close()
+
+	//build http request
+	if yopRequest.Timeout == 0 {
+		yopRequest.Timeout = 10 * time.Second
+	}
+	ctx, _ := context.WithTimeout(context.Background(), yopRequest.Timeout)
+	//defer cancel()
+
+	var uri = yopRequest.ServerRoot + yopRequest.ApiUri
+	httpRequest, err := http.NewRequestWithContext(ctx, "POST", uri, multipartBuffer)
+	if nil != err {
+		return nil, err
+	}
+	httpRequest.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	for k, v := range yopRequest.Headers {
+		httpRequest.Header.Set(k, v)
+	}
+
+	httpResp, err := yopClient.Client.Do(httpRequest)
+	if nil != err {
+		return nil, err
+	}
+	defer func(Body io.ReadCloser) { _ = Body.Close() }(httpResp.Body)
+	body, err := io.ReadAll(httpResp.Body)
+	if nil != err {
+		return nil, err
+	}
+	var yopResponse = response.YopResponse{Content: body}
+	metaData := response.YopResponseMetadata{}
+	metaData.YopSign = httpResp.Header.Get("X-Yop-Sign")
+	metaData.YopRequestId = httpResp.Header.Get("X-Yop-Request-Id")
+	yopResponse.Metadata = &metaData
+	respHandleCtx := response.RespHandleContext{YopSigner: &signer, YopResponse: &yopResponse, YopRequest: *yopRequest}
+	for i := range response.ANALYZER_CHAIN {
+		err = response.ANALYZER_CHAIN[i].Analyze(respHandleCtx, httpResp)
+		if nil != err {
+			return nil, err
+		}
+	}
+	return &yopResponse, nil
 }
 
 // Request 普通请求
