@@ -47,7 +47,13 @@ func (yopClient *YopClient) MultiPartUploadFileByUrl(yopRequest *request.YopRequ
 	if nil != err {
 		return nil, err
 	}
-	downloadResp, err := http.Get(sourceUrl)
+	if yopRequest.Timeout == 0 {
+		yopRequest.Timeout = 10 * time.Second
+	}
+	ctx, _ := context.WithTimeout(context.Background(), yopRequest.Timeout)
+	//defer cancel()
+	downloadHttpReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, sourceUrl, nil)
+	downloadResp, err := http.DefaultClient.Do(downloadHttpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -122,11 +128,6 @@ func (yopClient *YopClient) MultiPartUploadFileByUrl(yopRequest *request.YopRequ
 	}(multipartWriter, pipeWriter)
 
 	//build http request
-	if yopRequest.Timeout == 0 {
-		yopRequest.Timeout = 10 * time.Second
-	}
-	ctx, _ := context.WithTimeout(context.Background(), yopRequest.Timeout)
-	//defer cancel()
 
 	var uri = yopRequest.ServerRoot + yopRequest.ApiUri
 	httpRequest, err := http.NewRequestWithContext(ctx, "POST", uri, pipeReader)
