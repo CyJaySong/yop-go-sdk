@@ -107,49 +107,49 @@ func (yopClient *YopClient) MultiPartUploadFileByUrl(yopRequest *request.YopRequ
 
 	pipeReader, pipeWriter := io.Pipe()
 	multipartWriter := multipart.NewWriter(pipeWriter)
-	go func(multipartWriter *multipart.Writer, pw *io.PipeWriter) {
-		for k, v := range yopRequest.Params {
-			for i := range v {
-				if writeErr := multipartWriter.WriteField(k, url.QueryEscape(v[i])); writeErr != nil {
-					_ = multipartWriter.Close()
-					_ = pw.CloseWithError(writeErr)
-					return
-				}
-			}
-		}
-		// 设置表单字段
-		fileWriter, _ := multipartWriter.CreateFormFile(fieldName, filename)
-		// 将下载内容直接复制到表单字段
-		if _, copyErr := io.Copy(fileWriter, downloadResp.Body); copyErr != nil {
-			_ = multipartWriter.Close()
-			_ = pw.CloseWithError(fmt.Errorf("copy file failed: %w", copyErr))
-			return
-		}
-		_ = multipartWriter.Close()
-		_ = pw.Close()
-	}(multipartWriter, pipeWriter)
-
-	//build http request
 
 	var uri = yopRequest.ServerRoot + yopRequest.ApiUri
 	httpRequest, err := http.NewRequestWithContext(ctx, "POST", uri, pipeReader)
 	if nil != err {
+		_ = pipeReader.Close()
+		_ = pipeWriter.Close()
+		_ = multipartWriter.Close() // 因为pipeWriter关闭了,实际这个没用,反而会err,但是ide会提示未关闭,加个忽略免得心烦
 		return nil, err
 	}
 	httpRequest.Header.Set("Content-Type", multipartWriter.FormDataContentType())
 	for k, v := range yopRequest.Headers {
 		httpRequest.Header.Set(k, v)
 	}
+	for k, v := range yopRequest.Params {
+		for i := range v {
+			_ = multipartWriter.WriteField(k, url.QueryEscape(v[i]))
+		}
+	}
 
+	go func(multipartWriter *multipart.Writer, pipeWriter *io.PipeWriter) {
+		defer func() { _ = pipeWriter.Close() }()
+		// 设置表单字段
+		if fileWriter, err := multipartWriter.CreateFormFile(fieldName, filename); err != nil {
+			return
+		} else if _, err = io.Copy(fileWriter, downloadResp.Body); err != nil {
+			return
+		}
+		_ = multipartWriter.Close()
+	}(multipartWriter, pipeWriter)
+
+	//build http request
 	httpResp, err := yopClient.Client.Do(httpRequest)
 	if nil != err {
+		go func() { _, _ = io.Copy(io.Discard, pipeReader) }()
 		return nil, err
 	}
-	defer func(Body io.ReadCloser) { _ = Body.Close() }(httpResp.Body)
+
 	body, err := io.ReadAll(httpResp.Body)
+	_ = httpResp.Body.Close()
 	if nil != err {
 		return nil, err
 	}
+
 	var yopResponse = response.YopResponse{Content: body}
 	metaData := response.YopResponseMetadata{}
 	metaData.YopSign = httpResp.Header.Get("X-Yop-Sign")
@@ -178,17 +178,12 @@ func (yopClient *YopClient) MultiPartUploadFileByBytes(yopRequest *request.YopRe
 	multipartWriter := multipart.NewWriter(multipartBuffer)
 	for k, v := range yopRequest.Params {
 		for i := range v {
-			if err = multipartWriter.WriteField(k, url.QueryEscape(v[i])); err != nil {
-				_ = multipartWriter.Close()
-				return nil, err
-			}
+			_ = multipartWriter.WriteField(k, url.QueryEscape(v[i]))
 		}
 	}
+
 	fileWriter, _ := multipartWriter.CreateFormFile(fieldName, filename)
-	if _, err = fileWriter.Write(data); err != nil {
-		_ = multipartWriter.Close()
-		return nil, err
-	}
+	_, _ = fileWriter.Write(data)
 	_ = multipartWriter.Close()
 
 	//build http request
